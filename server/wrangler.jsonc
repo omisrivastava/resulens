@@ -1,14 +1,14 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "server",
+  "name": "resulens-api",
   "main": "src/index.ts",
-  "compatibility_date": "2026-05-02"
+  "compatibility_date": "2026-05-02",
   // "compatibility_flags": [
   //   "nodejs_compat"
   // ],
-  // "vars": {
-  //   "MY_VAR": "my-variable"
-  // },
+  "vars": {
+    "OPENROUTER_MODEL": "minimax/minimax-m2.5:free"
+  }
   // "kv_namespaces": [
   //   {
   //     "binding": "MY_KV_NAMESPACE",
