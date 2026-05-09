@@ -8,10 +8,13 @@ import {
   CheckCircle2,
   ChevronRight,
   ClipboardList,
+  Copy,
   Download,
+  FileDown,
   FileText,
   Gauge,
   History,
+  Layers3,
   Loader2,
   LockKeyhole,
   Moon,
@@ -41,17 +44,40 @@ type Rewrite = {
   after: string
 }
 
+type KeywordMatch = {
+  term: string
+  status: 'Matched' | 'Missing'
+}
+
+type SectionScore = {
+  section: 'Summary' | 'Skills' | 'Experience' | 'Projects' | 'Education'
+  score: number
+  note: string
+}
+
+type RewriteMode = 'concise' | 'impact' | 'ats' | 'senior' | 'startup'
+
+type RewriteVariant = {
+  mode: RewriteMode
+  label: string
+  bullets: Rewrite[]
+}
+
 type AnalysisResult = {
   id: string
   createdAt: string
   fileName: string
+  jobDescriptionText?: string
   jobWords: number
   tokenEstimate: number
   fitScore: number
   matchedSkills: string[]
   missingSkills: string[]
+  keywordMatches?: KeywordMatch[]
+  sectionScores?: SectionScore[]
   gapNarrative: string
   rewrites: Rewrite[]
+  rewriteVariants?: RewriteVariant[]
   modelUsed: string
 }
 
@@ -384,6 +410,13 @@ function ResultPage({
   const isActive = stream.id === analysisId && ['extracting', 'uploading', 'streaming'].includes(stream.status)
   const matchedCount = skillRows.filter((row) => row.status === 'Matched').length
   const missingCount = skillRows.filter((row) => row.status === 'Missing').length
+  const keywordMatches = useMemo(() => deriveKeywordMatches(result, skillRows), [result, skillRows])
+  const sectionScores = useMemo(() => deriveSectionScores(result), [result])
+  const rewriteVariants = useMemo(() => deriveRewriteVariants(result), [result])
+  const [rewriteMode, setRewriteMode] = useState<RewriteMode>('ats')
+  const activeRewriteSet =
+    rewriteVariants.find((variant) => variant.mode === rewriteMode) ?? rewriteVariants[0]
+  const activeBullets = activeRewriteSet?.bullets ?? result?.rewrites ?? []
 
   if (!result && !isActive) {
     return (
@@ -411,10 +444,48 @@ function ResultPage({
         <div className="result-stats">
           <Metric icon={<CheckCircle2 size={18} />} label="Matched" value={matchedCount.toString()} />
           <Metric icon={<XCircle size={18} />} label="Gaps" value={missingCount.toString()} />
+          <Metric icon={<Layers3 size={18} />} label="Sections" value={sectionScores.length.toString()} />
         </div>
       </div>
 
       <div className="result-grid">
+        <section className="result-section heatmap-section">
+          <SectionTitle icon={<ClipboardList size={19} />} title="JD keyword heatmap" />
+          {result?.jobDescriptionText ? (
+            <JobDescriptionHeatmap text={result.jobDescriptionText} keywords={keywordMatches} />
+          ) : (
+            <LoadingLine text="Job description text is available for new analyses." />
+          )}
+          {keywordMatches.length ? (
+            <div className="keyword-legend" aria-label="Keyword legend">
+              <span className="legend-item matched">Matched keywords</span>
+              <span className="legend-item missing">Missing keywords</span>
+            </div>
+          ) : null}
+        </section>
+
+        <section className="result-section section-score-section">
+          <SectionTitle icon={<BarChart3 size={19} />} title="Section scoring" />
+          <div className="section-score-list">
+            {sectionScores.length ? (
+              sectionScores.map((item) => (
+                <article className="section-score" key={item.section}>
+                  <div>
+                    <strong>{item.section}</strong>
+                    <span>{item.score}</span>
+                  </div>
+                  <div className="score-track" aria-label={`${item.section} score ${item.score}`}>
+                    <span style={{ width: `${item.score}%` }} />
+                  </div>
+                  <p>{item.note}</p>
+                </article>
+              ))
+            ) : (
+              <LoadingLine text="Waiting for section-level scores..." />
+            )}
+          </div>
+        </section>
+
         <section className="result-section skill-section">
           <SectionTitle icon={<Table2 size={19} />} title="Skill gaps" />
           <div className="skill-table">
@@ -440,20 +511,94 @@ function ResultPage({
         </section>
 
         <section className="result-section rewrite-section">
-          <SectionTitle icon={<Wand2 size={19} />} title="Rewritten bullets" />
+          <div className="rewrite-heading">
+            <SectionTitle icon={<Wand2 size={19} />} title="Rewritten bullets" />
+            {result ? <ExportActions result={result} bullets={activeBullets} mode={activeRewriteSet?.label ?? 'Bullets'} /> : null}
+          </div>
+          <div className="mode-tabs" aria-label="Rewrite modes">
+            {rewriteVariants.map((variant) => (
+              <button
+                className={variant.mode === rewriteMode ? 'active' : ''}
+                type="button"
+                key={variant.mode}
+                onClick={() => setRewriteMode(variant.mode)}
+              >
+                {variant.label}
+              </button>
+            ))}
+          </div>
           <div className="rewrite-list">
-            {(result?.rewrites ?? []).map((rewrite) => (
+            {activeBullets.map((rewrite) => (
               <article className="rewrite-card" key={rewrite.after}>
                 <p className="before">{rewrite.before}</p>
                 <ChevronRight size={18} aria-hidden="true" />
                 <p className="after">{rewrite.after}</p>
               </article>
             ))}
-            {!result?.rewrites.length ? <LoadingLine text="Waiting for rewritten bullets..." /> : null}
+            {!activeBullets.length ? <LoadingLine text="Waiting for rewritten bullets..." /> : null}
           </div>
         </section>
       </div>
     </section>
+  )
+}
+
+function JobDescriptionHeatmap({
+  text,
+  keywords,
+}: {
+  text: string
+  keywords: KeywordMatch[]
+}) {
+  const parts = useMemo(() => splitTextByKeywords(text, keywords), [text, keywords])
+
+  return (
+    <div className="jd-heatmap">
+      {parts.map((part, index) =>
+        part.keyword ? (
+          <mark className={part.keyword.status.toLowerCase()} key={`${part.text}-${index}`}>
+            {part.text}
+          </mark>
+        ) : (
+          <span key={`${part.text}-${index}`}>{part.text}</span>
+        ),
+      )}
+    </div>
+  )
+}
+
+function ExportActions({
+  result,
+  bullets,
+  mode,
+}: {
+  result: AnalysisResult
+  bullets: Rewrite[]
+  mode: string
+}) {
+  const [copied, setCopied] = useState(false)
+
+  const copyBullets = async () => {
+    await navigator.clipboard.writeText(formatBulletsForClipboard(bullets))
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1400)
+  }
+
+  return (
+    <div className="export-actions" aria-label="Export rewritten bullets">
+      <button type="button" onClick={copyBullets}>
+        <Copy size={15} />
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+      <button type="button" onClick={() => downloadMarkdown(result, bullets, mode)}>
+        <Download size={15} />
+        Markdown
+      </button>
+      <button type="button" onClick={() => downloadDocx(result, bullets, mode)}>
+        <FileDown size={15} />
+        DOCX
+      </button>
+    </div>
   )
 }
 
@@ -702,6 +847,266 @@ function rowsFromResult(result?: AnalysisResult | null): SkillRow[] {
     })),
   ]
 }
+
+function deriveKeywordMatches(result: AnalysisResult | null | undefined, rows: SkillRow[]): KeywordMatch[] {
+  if (result?.keywordMatches?.length) return result.keywordMatches
+  return rows.map((row) => ({ term: row.skill, status: row.status === 'Missing' ? 'Missing' : 'Matched' }))
+}
+
+function deriveSectionScores(result: AnalysisResult | null | undefined): SectionScore[] {
+  if (result?.sectionScores?.length) return result.sectionScores
+  if (!result) return []
+  const matchedRatio = result.matchedSkills.length / Math.max(result.matchedSkills.length + result.missingSkills.length, 1)
+  const base = Math.round(42 + matchedRatio * 44)
+  return [
+    { section: 'Summary', score: clampClientScore(base - 4), note: 'Add a sharper role-aligned summary with target keywords.' },
+    { section: 'Skills', score: clampClientScore(base + 6), note: 'Skills coverage follows the detected matched and missing terms.' },
+    { section: 'Experience', score: clampClientScore(result.fitScore), note: 'Experience should carry the strongest measurable proof.' },
+    { section: 'Projects', score: clampClientScore(base - 9), note: 'Projects can reinforce tools, scope, and outcomes from the JD.' },
+    { section: 'Education', score: clampClientScore(base - 14), note: 'Education is scored lightly unless the JD names credentials.' },
+  ]
+}
+
+function deriveRewriteVariants(result: AnalysisResult | null | undefined): RewriteVariant[] {
+  const bullets = result?.rewrites ?? []
+  if (result?.rewriteVariants?.length) return result.rewriteVariants
+  if (!bullets.length) return []
+  return rewriteModes.map((mode) => ({
+    ...mode,
+    bullets: bullets.map((bullet) => ({
+      before: bullet.before,
+      after: rewriteForMode(bullet.after, mode.mode),
+    })),
+  }))
+}
+
+const rewriteModes: Array<{ mode: RewriteMode; label: string }> = [
+  { mode: 'concise', label: 'Concise' },
+  { mode: 'impact', label: 'Impact-heavy' },
+  { mode: 'ats', label: 'ATS-friendly' },
+  { mode: 'senior', label: 'Senior-level' },
+  { mode: 'startup', label: 'Startup-style' },
+]
+
+function rewriteForMode(text: string, mode: RewriteMode) {
+  const clean = text.replace(/\.$/, '')
+  if (mode === 'concise') return `${clean}.`
+  if (mode === 'impact') return `${clean}, emphasizing measurable business impact and execution quality.`
+  if (mode === 'ats') return `${clean}, using job-aligned keywords, tools, and responsibility language.`
+  if (mode === 'senior') return `${clean}, influencing stakeholders, strategy, and durable operating standards.`
+  return `${clean}, moving quickly across ambiguity while keeping outcomes visible.`
+}
+
+function splitTextByKeywords(text: string, keywords: KeywordMatch[]) {
+  const cleanKeywords = [...keywords]
+    .filter((keyword) => keyword.term.trim().length > 1)
+    .sort((left, right) => right.term.length - left.term.length)
+  if (!cleanKeywords.length) return [{ text }]
+
+  const escaped = cleanKeywords.map((keyword) => escapeRegExp(keyword.term)).join('|')
+  const regex = new RegExp(`\\b(${escaped})\\b`, 'gi')
+  const parts: Array<{ text: string; keyword?: KeywordMatch }> = []
+  let lastIndex = 0
+  for (const match of text.matchAll(regex)) {
+    const index = match.index ?? 0
+    if (index > lastIndex) parts.push({ text: text.slice(lastIndex, index) })
+    const matchedText = match[0]
+    const keyword = cleanKeywords.find((item) => item.term.toLowerCase() === matchedText.toLowerCase())
+    parts.push({ text: matchedText, keyword })
+    lastIndex = index + matchedText.length
+  }
+  if (lastIndex < text.length) parts.push({ text: text.slice(lastIndex) })
+  return parts
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function clampClientScore(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value)))
+}
+
+function formatBulletsForClipboard(bullets: Rewrite[]) {
+  return bullets.map((bullet) => `- ${bullet.after}`).join('\n')
+}
+
+function downloadMarkdown(result: AnalysisResult, bullets: Rewrite[], mode: string) {
+  const markdown = [
+    `# ResuLens rewritten bullets: ${result.fileName}`,
+    '',
+    `Mode: ${mode}`,
+    `Fit score: ${result.fitScore}/100`,
+    '',
+    ...bullets.map((bullet) => `- ${bullet.after}`),
+    '',
+  ].join('\n')
+  downloadBlob(markdown, `${safeFileBase(result.fileName)}-${slug(mode)}-bullets.md`, 'text/markdown;charset=utf-8')
+}
+
+function downloadDocx(result: AnalysisResult, bullets: Rewrite[], mode: string) {
+  const docx = buildDocx({
+    title: `ResuLens rewritten bullets: ${result.fileName}`,
+    subtitle: `${mode} - fit score ${result.fitScore}/100`,
+    bullets: bullets.map((bullet) => bullet.after),
+  })
+  downloadBlob(
+    docx,
+    `${safeFileBase(result.fileName)}-${slug(mode)}-bullets.docx`,
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  )
+}
+
+function downloadBlob(content: BlobPart, fileName: string, type: string) {
+  const blob = content instanceof Blob ? content : new Blob([content], { type })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = fileName
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
+function safeFileBase(fileName: string) {
+  return fileName.replace(/\.[^.]+$/, '').replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '') || 'resulens'
+}
+
+function slug(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+}
+
+function buildDocx({
+  title,
+  subtitle,
+  bullets,
+}: {
+  title: string
+  subtitle: string
+  bullets: string[]
+}) {
+  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>${xmlEscape(title)}</w:t></w:r></w:p>
+    <w:p><w:r><w:t>${xmlEscape(subtitle)}</w:t></w:r></w:p>
+    ${bullets
+      .map(
+        (bullet) =>
+          `<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>${xmlEscape(
+            bullet,
+          )}</w:t></w:r></w:p>`,
+      )
+      .join('')}
+  </w:body>
+</w:document>`
+  const files = [
+    {
+      name: '[Content_Types].xml',
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/></Types>`,
+    },
+    {
+      name: '_rels/.rels',
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`,
+    },
+    {
+      name: 'word/document.xml',
+      content: documentXml,
+    },
+    {
+      name: 'word/numbering.xml',
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="•"/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>`,
+    },
+  ]
+  return new Blob([zipStore(files)], {
+    type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  })
+}
+
+function xmlEscape(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+function zipStore(files: Array<{ name: string; content: string }>) {
+  const encoder = new TextEncoder()
+  const chunks: Uint8Array[] = []
+  const central: Uint8Array[] = []
+  let offset = 0
+
+  for (const file of files) {
+    const name = encoder.encode(file.name)
+    const data = encoder.encode(file.content)
+    const crc = crc32(data)
+    const local = new Uint8Array(30 + name.length)
+    const localView = new DataView(local.buffer)
+    localView.setUint32(0, 0x04034b50, true)
+    localView.setUint16(4, 20, true)
+    localView.setUint16(8, 0, true)
+    localView.setUint32(14, crc, true)
+    localView.setUint32(18, data.length, true)
+    localView.setUint32(22, data.length, true)
+    localView.setUint16(26, name.length, true)
+    local.set(name, 30)
+    chunks.push(local, data)
+
+    const centralFile = new Uint8Array(46 + name.length)
+    const centralView = new DataView(centralFile.buffer)
+    centralView.setUint32(0, 0x02014b50, true)
+    centralView.setUint16(4, 20, true)
+    centralView.setUint16(6, 20, true)
+    centralView.setUint16(10, 0, true)
+    centralView.setUint32(16, crc, true)
+    centralView.setUint32(20, data.length, true)
+    centralView.setUint32(24, data.length, true)
+    centralView.setUint16(28, name.length, true)
+    centralView.setUint32(42, offset, true)
+    centralFile.set(name, 46)
+    central.push(centralFile)
+    offset += local.length + data.length
+  }
+
+  const centralOffset = offset
+  const centralSize = central.reduce((sum, item) => sum + item.length, 0)
+  const end = new Uint8Array(22)
+  const endView = new DataView(end.buffer)
+  endView.setUint32(0, 0x06054b50, true)
+  endView.setUint16(8, files.length, true)
+  endView.setUint16(10, files.length, true)
+  endView.setUint32(12, centralSize, true)
+  endView.setUint32(16, centralOffset, true)
+
+  return concatUint8Arrays([...chunks, ...central, end])
+}
+
+function concatUint8Arrays(items: Uint8Array[]) {
+  const total = items.reduce((sum, item) => sum + item.length, 0)
+  const output = new Uint8Array(total)
+  let offset = 0
+  for (const item of items) {
+    output.set(item, offset)
+    offset += item.length
+  }
+  return output
+}
+
+function crc32(data: Uint8Array) {
+  let crc = -1
+  for (const byte of data) {
+    crc = (crc >>> 8) ^ crcTable[(crc ^ byte) & 0xff]
+  }
+  return (crc ^ -1) >>> 0
+}
+
+const crcTable = Array.from({ length: 256 }, (_, index) => {
+  let crc = index
+  for (let bit = 0; bit < 8; bit += 1) {
+    crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1
+  }
+  return crc >>> 0
+})
 
 function countWords(text: string) {
   return text.trim() ? text.trim().split(/\s+/).length : 0
